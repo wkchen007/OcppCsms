@@ -90,51 +90,20 @@ app.Map("/ocpp", async context =>
                     Console.WriteLine($"Action: {action}");
                     Console.WriteLine($"Payload: {payload}");
 
-                    if (action == "BootNotification")
+                    switch (action)
                     {
-                        if (payload is not JsonObject payloadObject)
-                        {
-                            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification payload must be an object", context.RequestAborted);
+                        case "BootNotification":
+                            await HandleBootNotificationAsync(socket, uniqueId, payload, context.RequestAborted);
                             break;
-                        }
 
-                        string? vendor;
-                        string? model;
-
-                        try
-                        {
-                            vendor = payloadObject["chargePointVendor"]?.GetValue<string>();
-                            model = payloadObject["chargePointModel"]?.GetValue<string>();
-                        }
-                        catch
-                        {
-                            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification field type is invalid", context.RequestAborted);
+                        case "Heartbeat":
+                            await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);
                             break;
-                        }
 
-                        if (string.IsNullOrWhiteSpace(vendor) || string.IsNullOrWhiteSpace(model))
-                        {
-                            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification required field is missing", context.RequestAborted);
+                        default:
+                            await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
                             break;
-                        }
-
-                        Console.WriteLine($"Vendor: {vendor}");
-                        Console.WriteLine($"Model: {model}");
-
-                        var responsePayload = new JsonObject
-                        {
-                            ["status"] = "Accepted",
-                            ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
-                            ["interval"] = 300
-                        };
-
-                        await SendCallResultAsync(socket, uniqueId, responsePayload, context.RequestAborted);
                     }
-                    else
-                    {
-                        await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
-                    }
-
                     break;
                 }
             case 3: // CALLRESULT
@@ -235,4 +204,55 @@ static async Task SendCallErrorAsync(WebSocket socket, string? uniqueId, string 
     };
 
     await SendMessageAsync(socket, errorResponse, cancellationToken);
+}
+
+static async Task HandleHeartbeatAsync(WebSocket socket, string? uniqueId, CancellationToken cancellationToken)
+{
+    var responsePayload = new JsonObject
+    {
+        ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+    };
+
+    await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
+}
+
+static async Task HandleBootNotificationAsync(WebSocket socket, string? uniqueId, JsonNode? payload, CancellationToken cancellationToken)
+{
+    if (payload is not JsonObject payloadObject)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification payload must be an object", cancellationToken);
+        return;
+    }
+
+    string? vendor;
+    string? model;
+
+    try
+    {
+        vendor = payloadObject["chargePointVendor"]?.GetValue<string>();
+        model = payloadObject["chargePointModel"]?.GetValue<string>();
+    }
+    catch
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification field type is invalid", cancellationToken);
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(vendor) || string.IsNullOrWhiteSpace(model))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification required field is missing", cancellationToken);
+        return;
+    }
+
+    Console.WriteLine($"Vendor: {vendor}");
+    Console.WriteLine($"Model: {model}");
+
+    var responsePayload = new JsonObject
+    {
+        ["status"] = "Accepted",
+        ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+        ["interval"] = 300
+    };
+
+    await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
 }
