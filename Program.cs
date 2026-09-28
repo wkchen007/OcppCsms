@@ -1,16 +1,81 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.Converters.Add(
+        new JsonStringEnumConverter());
+});
 var app = builder.Build();
+var connectorStates = new ConcurrentDictionary<string, ConnectorState>();
+var chargePointConnections = new ConcurrentDictionary<string, bool>();
 
 app.UseWebSockets();
 
 app.MapGet("/", () => "Hello World!");
 
-app.Map("/ocpp", async context =>
+app.MapGet("/api/connectors/{chargePointId}/{connectorId}",
+    (string chargePointId, int connectorId) =>
 {
+    var connectorKey = $"{chargePointId}/{connectorId}";
+
+    if (connectorStates.TryGetValue(connectorKey, out var state))
+    {
+        return Results.Ok(state);
+    }
+
+    return Results.NotFound();
+});
+
+app.MapGet("/api/chargepoints/{chargePointId}/connectors",
+    (string chargePointId) =>
+{
+    var prefix = $"{chargePointId}/";
+
+    var connectors = connectorStates
+        .Where(x => x.Key.StartsWith(prefix))
+        .Select(x => new
+        {
+            ConnectorId = int.Parse(x.Key.Split('/')[1]),
+            Status = x.Value.Status,
+            ErrorCode = x.Value.ErrorCode,
+            UpdatedAt = x.Value.UpdatedAt
+        })
+        .OrderBy(x => x.ConnectorId)
+        .ToList();
+
+    return Results.Ok(connectors);
+});
+
+app.MapGet("/api/chargepoints/{chargePointId}",
+    (string chargePointId) =>
+{
+    if (chargePointConnections.TryGetValue(chargePointId, out var connected))
+    {
+        return Results.Ok(new
+        {
+            ChargePointId = chargePointId,
+            Connected = connected
+        });
+    }
+
+    return Results.NotFound();
+});
+
+app.Map("/ocpp/{chargePointId}", async context =>
+{
+    var chargePointId = context.Request.RouteValues["chargePointId"]?.ToString();
+
+    if (string.IsNullOrWhiteSpace(chargePointId))
+    {
+        context.Response.StatusCode = 400;
+        return;
+    }
+
     if (!context.WebSockets.IsWebSocketRequest)
     {
         context.Response.StatusCode = 400;
@@ -19,112 +84,123 @@ app.Map("/ocpp", async context =>
 
     var socket = await context.WebSockets.AcceptWebSocketAsync();
 
-    var buffer = new byte[4096];
+    chargePointConnections[chargePointId] = true;
 
-    while (socket.State == WebSocketState.Open)
+    Console.WriteLine($"Charge Point connected: {chargePointId}");
+
+
+    try
     {
-        var message = await ReceiveMessageAsync(socket, context.RequestAborted);
-
-        if (message == null)
+        while (socket.State == WebSocketState.Open)
         {
-            break;
-        }
+            var message = await ReceiveMessageAsync(socket, context.RequestAborted);
 
-        Console.WriteLine($"收到完整訊息: {message}");
+            if (message == null)
+            {
+                break;
+            }
 
-        // JSON String → JsonNode
-        JsonNode? json;
+            Console.WriteLine($"收到完整訊息: {message}");
 
-        try
-        {
-            json = JsonNode.Parse(message);
-        }
-        catch
-        {
-            Console.WriteLine("JSON 格式錯誤");
-            continue;
-        }
+            // JSON String → JsonNode
+            JsonNode? json;
 
-        if (json is not JsonArray array)
-        {
-            Console.WriteLine("不是合法的 OCPP Message");
-            continue;
-        }
+            try
+            {
+                json = JsonNode.Parse(message);
+            }
+            catch
+            {
+                Console.WriteLine("JSON 格式錯誤");
+                continue;
+            }
 
-        if (array.Count == 0)
-        {
-            Console.WriteLine("OCPP Message 是空的");
-            continue;
-        }
+            if (json is not JsonArray array)
+            {
+                Console.WriteLine("不是合法的 OCPP Message");
+                continue;
+            }
 
-        int messageTypeId;
+            if (array.Count == 0)
+            {
+                Console.WriteLine("OCPP Message 是空的");
+                continue;
+            }
 
-        try
-        {
-            messageTypeId = array[0]!.GetValue<int>();
-        }
-        catch
-        {
-            Console.WriteLine("MessageTypeId 格式錯誤");
-            continue;
-        }
+            int messageTypeId;
 
-        // 判斷 OCPP Message 類型
-        switch (messageTypeId)
-        {
-            case 2: // CALL
-                {
-                    Console.WriteLine("這是 CALL");
+            try
+            {
+                messageTypeId = array[0]!.GetValue<int>();
+            }
+            catch
+            {
+                Console.WriteLine("MessageTypeId 格式錯誤");
+                continue;
+            }
 
-                    if (array.Count != 4)
+            // 判斷 OCPP Message 類型
+            switch (messageTypeId)
+            {
+                case 2: // CALL
                     {
-                        Console.WriteLine("CALL 格式錯誤");
+                        Console.WriteLine("這是 CALL");
+
+                        if (array.Count != 4)
+                        {
+                            Console.WriteLine("CALL 格式錯誤");
+                            break;
+                        }
+
+                        var uniqueId = array[1]?.GetValue<string>();
+                        var action = array[2]?.GetValue<string>();
+                        var payload = array[3];
+
+                        Console.WriteLine($"UniqueId: {uniqueId}");
+                        Console.WriteLine($"Action: {action}");
+                        Console.WriteLine($"Payload: {payload}");
+
+                        switch (action)
+                        {
+                            case "BootNotification":
+                                await HandleBootNotificationAsync(socket, uniqueId, payload, context.RequestAborted);
+                                break;
+                            case "Heartbeat":
+                                await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);
+                                break;
+                            case "StatusNotification":
+                                await HandleStatusNotificationAsync(socket, chargePointId, uniqueId, payload, connectorStates, context.RequestAborted);
+                                break;
+                            default:
+                                await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
+                                break;
+                        }
                         break;
                     }
-
-                    var uniqueId = array[1]?.GetValue<string>();
-                    var action = array[2]?.GetValue<string>();
-                    var payload = array[3];
-
-                    Console.WriteLine($"UniqueId: {uniqueId}");
-                    Console.WriteLine($"Action: {action}");
-                    Console.WriteLine($"Payload: {payload}");
-
-                    switch (action)
-                    {
-                        case "BootNotification":
-                            await HandleBootNotificationAsync(socket, uniqueId, payload, context.RequestAborted);
-                            break;
-
-                        case "Heartbeat":
-                            await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);
-                            break;
-
-                        default:
-                            await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
-                            break;
-                    }
+                case 3: // CALLRESULT
+                    Console.WriteLine("這是 CALLRESULT");
                     break;
-                }
-            case 3: // CALLRESULT
-                Console.WriteLine("這是 CALLRESULT");
-                break;
 
-            case 4: // CALLERROR
-                Console.WriteLine("這是 CALLERROR");
-                break;
+                case 4: // CALLERROR
+                    Console.WriteLine("這是 CALLERROR");
+                    break;
 
-            default:
-                Console.WriteLine(
-                    $"未知的 MessageTypeId: {messageTypeId}");
-                break;
+                default:
+                    Console.WriteLine(
+                        $"未知的 MessageTypeId: {messageTypeId}");
+                    break;
+            }
+        }
+
+        if (socket.State == WebSocketState.CloseReceived)
+        {
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, context.RequestAborted);
         }
     }
-
-    if (socket.State == WebSocketState.CloseReceived)
+    finally
     {
-        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, context.RequestAborted);
-        Console.WriteLine("WebSocket 已關閉");
+        chargePointConnections[chargePointId] = false;
+        Console.WriteLine($"Charge Point disconnected: {chargePointId}");
     }
 });
 
@@ -255,4 +331,118 @@ static async Task HandleBootNotificationAsync(WebSocket socket, string? uniqueId
     };
 
     await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
+}
+
+static async Task HandleStatusNotificationAsync(WebSocket socket, string? chargePointId, string? uniqueId, JsonNode? payload,
+                                                ConcurrentDictionary<string, ConnectorState> connectorStates, CancellationToken cancellationToken)
+{
+    if (payload is not JsonObject payloadObject)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification payload must be an object", cancellationToken);
+        return;
+    }
+
+    int connectorId;
+    string? errorCode;
+    string? status;
+
+    try
+    {
+        connectorId = payloadObject["connectorId"]!.GetValue<int>();
+        errorCode = payloadObject["errorCode"]?.GetValue<string>();
+        status = payloadObject["status"]?.GetValue<string>();
+    }
+    catch
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification field type is invalid", cancellationToken);
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(errorCode) || string.IsNullOrWhiteSpace(status))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification required field is missing", cancellationToken);
+        return;
+    }
+
+    if (connectorId < 0)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification connectorId is invalid", cancellationToken);
+        return;
+    }
+
+    if (!Enum.TryParse<ConnectorStatus>(status, out var connectorStatus))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification status is invalid", cancellationToken);
+        return;
+    }
+
+    if (!Enum.TryParse<ChargePointErrorCode>(errorCode, out var chargePointErrorCode))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification errorCode is invalid", cancellationToken);
+        return;
+    }
+
+    Console.WriteLine($"ChargePointId: {chargePointId}");
+    Console.WriteLine($"ConnectorId: {connectorId}");
+    Console.WriteLine($"ErrorCode: {chargePointErrorCode}");
+    Console.WriteLine($"Status: {connectorStatus}");
+
+    var connectorKey = $"{chargePointId}/{connectorId}";
+    var state = new ConnectorState
+    {
+        Status = connectorStatus,
+        ErrorCode = chargePointErrorCode,
+        UpdatedAt = DateTime.UtcNow
+    };
+    connectorStates[connectorKey] = state;
+
+    Console.WriteLine(
+        $"{connectorKey} → " +
+        $"{state.Status}, " +
+        $"{state.ErrorCode}, " +
+        $"{state.UpdatedAt}");
+
+    await SendCallResultAsync(socket, uniqueId, new JsonObject(), cancellationToken);
+}
+
+enum ConnectorStatus
+{
+    Available,
+    Preparing,
+    Charging,
+    SuspendedEVSE,
+    SuspendedEV,
+    Finishing,
+    Reserved,
+    Unavailable,
+    Faulted
+}
+
+enum ChargePointErrorCode
+{
+    ConnectorLockFailure,
+    EVCommunicationError,
+    GroundFailure,
+    HighTemperature,
+    InternalError,
+    LocalListConflict,
+    NoError,
+    OtherError,
+    OverCurrentFailure,
+    OverVoltage,
+    PowerMeterFailure,
+    PowerSwitchFailure,
+    ReaderFailure,
+    ResetFailure,
+    UnderVoltage,
+    WeakSignal
+}
+
+class ConnectorState
+{
+    public ConnectorStatus Status { get; set; }
+
+    public ChargePointErrorCode ErrorCode { get; set; }
+
+    public DateTime UpdatedAt { get; set; }
 }
