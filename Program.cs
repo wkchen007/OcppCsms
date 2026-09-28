@@ -171,6 +171,9 @@ app.Map("/ocpp/{chargePointId}", async context =>
                             case "StatusNotification":
                                 await HandleStatusNotificationAsync(socket, chargePointId, uniqueId, payload, connectorStates, context.RequestAborted);
                                 break;
+                            case "Authorize":
+                                await HandleAuthorizeAsync(socket, uniqueId, payload, context.RequestAborted);
+                                break;
                             default:
                                 await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
                                 break;
@@ -403,6 +406,45 @@ static async Task HandleStatusNotificationAsync(WebSocket socket, string? charge
         $"{state.UpdatedAt}");
 
     await SendCallResultAsync(socket, uniqueId, new JsonObject(), cancellationToken);
+}
+
+static async Task HandleAuthorizeAsync(WebSocket socket, string? uniqueId, JsonNode? payload, CancellationToken cancellationToken)
+{
+    if (payload is not JsonObject payloadObject)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "Authorize payload must be an object", cancellationToken);
+        return;
+    }
+
+    string? idTag;
+
+    try
+    {
+        idTag = payloadObject["idTag"]?.GetValue<string>();
+    }
+    catch
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "Authorize idTag type is invalid", cancellationToken);
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(idTag))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "Authorize idTag is required", cancellationToken);
+        return;
+    }
+
+    Console.WriteLine($"Authorize idTag: {idTag}");
+
+    var responsePayload = new JsonObject
+    {
+        ["idTagInfo"] = new JsonObject
+        {
+            ["status"] = "Accepted"
+        }
+    };
+
+    await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
 }
 
 enum ConnectorStatus
