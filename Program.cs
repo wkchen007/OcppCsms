@@ -228,6 +228,10 @@ app.Map("/ocpp/{chargePointId}", async context =>
             await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, null, context.RequestAborted);
         }
     }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine($"Charge Point connection aborted: {chargePointId}");
+    }
     finally
     {
         chargePointConnections[chargePointId] = false;
