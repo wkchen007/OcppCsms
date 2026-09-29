@@ -13,6 +13,8 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 var app = builder.Build();
 var connectorStates = new ConcurrentDictionary<string, ConnectorState>();
 var chargePointConnections = new ConcurrentDictionary<string, bool>();
+var transactions = new ConcurrentDictionary<int, Transaction>();
+var transactionIdGenerator = new TransactionIdGenerator();
 
 app.UseWebSockets();
 
@@ -66,6 +68,17 @@ app.MapGet("/api/chargepoints/{chargePointId}",
     return Results.NotFound();
 });
 
+app.MapGet("/api/transactions/{transactionId}",
+    (int transactionId) =>
+{
+    if (transactions.TryGetValue(transactionId, out var transaction))
+    {
+        return Results.Ok(transaction);
+    }
+
+    return Results.NotFound();
+});
+
 app.Map("/ocpp/{chargePointId}", async context =>
 {
     var chargePointId = context.Request.RouteValues["chargePointId"]?.ToString();
@@ -82,7 +95,16 @@ app.Map("/ocpp/{chargePointId}", async context =>
         return;
     }
 
-    var socket = await context.WebSockets.AcceptWebSocketAsync();
+    var requestedProtocols = context.WebSockets.WebSocketRequestedProtocols;
+    Console.WriteLine($"Requested protocols: " + $"{string.Join(", ", requestedProtocols)}");
+
+    if (!requestedProtocols.Contains("ocpp1.6"))
+    {
+        context.Response.StatusCode = 400;
+        return;
+    }
+
+    var socket = await context.WebSockets.AcceptWebSocketAsync("ocpp1.6");
 
     chargePointConnections[chargePointId] = true;
 
@@ -173,6 +195,12 @@ app.Map("/ocpp/{chargePointId}", async context =>
                                 break;
                             case "Authorize":
                                 await HandleAuthorizeAsync(socket, uniqueId, payload, context.RequestAborted);
+                                break;
+                            case "StartTransaction":
+                                await HandleStartTransactionAsync(socket, chargePointId, uniqueId, payload, transactionIdGenerator, transactions, context.RequestAborted);
+                                break;
+                            case "MeterValues":
+                                await HandleMeterValuesAsync(socket, chargePointId, uniqueId, payload, transactions, context.RequestAborted);
                                 break;
                             default:
                                 await SendCallErrorAsync(socket, uniqueId, "NotSupported", "Action is not supported", context.RequestAborted);
@@ -447,6 +475,263 @@ static async Task HandleAuthorizeAsync(WebSocket socket, string? uniqueId, JsonN
     await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
 }
 
+static async Task HandleStartTransactionAsync(WebSocket socket, string chargePointId, string? uniqueId, JsonNode? payload, TransactionIdGenerator transactionIdGenerator, ConcurrentDictionary<int, Transaction> transactions, CancellationToken cancellationToken)
+{
+    if (payload is not JsonObject payloadObject)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StartTransaction payload must be an object", cancellationToken);
+        return;
+    }
+
+    int connectorId;
+    string? idTag;
+    int meterStart;
+    string? timestamp;
+
+    try
+    {
+        connectorId = payloadObject["connectorId"]!.GetValue<int>();
+        idTag = payloadObject["idTag"]?.GetValue<string>();
+        meterStart = payloadObject["meterStart"]!.GetValue<int>();
+        timestamp = payloadObject["timestamp"]?.GetValue<string>();
+    }
+    catch
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StartTransaction field type is invalid", cancellationToken);
+        return;
+    }
+
+    if (string.IsNullOrWhiteSpace(idTag) || string.IsNullOrWhiteSpace(timestamp))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StartTransaction required field is missing", cancellationToken);
+        return;
+    }
+
+    if (connectorId <= 0)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StartTransaction connectorId is invalid", cancellationToken);
+        return;
+    }
+
+    if (!DateTime.TryParse(timestamp, out var startedAt))
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StartTransaction timestamp is invalid", cancellationToken);
+        return;
+    }
+
+    var transactionId = transactionIdGenerator.Next();
+
+    var transaction = new Transaction
+    {
+        TransactionId = transactionId,
+        ChargePointId = chargePointId,
+        ConnectorId = connectorId,
+        IdTag = idTag,
+        MeterStart = meterStart,
+        StartedAt = startedAt
+    };
+    transactions[transactionId] = transaction;
+
+    Console.WriteLine(
+        $"Transaction started: " +
+        $"TransactionId={transactionId}, " +
+        $"ChargePoint={chargePointId}, " +
+        $"Connector={connectorId}");
+
+    var responsePayload = new JsonObject
+    {
+        ["transactionId"] = transactionId,
+        ["idTagInfo"] = new JsonObject
+        {
+            ["status"] = "Accepted"
+        }
+    };
+
+    await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
+}
+
+static async Task HandleMeterValuesAsync(WebSocket socket, string chargePointId, string? uniqueId, JsonNode? payload, ConcurrentDictionary<int, Transaction> transactions, CancellationToken cancellationToken)
+{
+    if (payload is not JsonObject payloadObject)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues payload must be an object", cancellationToken);
+        return;
+    }
+
+    int connectorId;
+
+    try
+    {
+        connectorId = payloadObject["connectorId"]!.GetValue<int>();
+    }
+    catch
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues connectorId is invalid", cancellationToken);
+        return;
+    }
+
+    if (connectorId <= 0)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues connectorId is invalid", cancellationToken);
+        return;
+    }
+
+    int? transactionId = null;
+    if (payloadObject["transactionId"] is not null)
+    {
+        try
+        {
+            transactionId = payloadObject["transactionId"]!.GetValue<int>();
+        }
+        catch
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues transactionId is invalid", cancellationToken);
+            return;
+        }
+    }
+
+    if (transactionId.HasValue)
+    {
+        if (!transactions.TryGetValue(transactionId.Value, out var transaction))
+        {
+            await SendCallErrorAsync(socket, uniqueId, "PropertyConstraintViolation", "MeterValues transactionId does not exist", cancellationToken);
+            return;
+        }
+
+        if (transaction.ChargePointId != chargePointId || transaction.ConnectorId != connectorId)
+        {
+            await SendCallErrorAsync(socket, uniqueId, "PropertyConstraintViolation", "MeterValues transaction does not match connector", cancellationToken);
+            return;
+        }
+    }
+
+    Console.WriteLine(
+        $"MeterValues received: " +
+        $"ChargePoint={chargePointId}, " +
+        $"Connector={connectorId}, " +
+        $"TransactionId={transactionId?.ToString() ?? "none"}");
+
+    if (payloadObject["meterValue"] is not JsonArray meterValues)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues meterValue must be an array", cancellationToken);
+        return;
+    }
+
+    if (meterValues.Count == 0)
+    {
+        await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues meterValue cannot be empty", cancellationToken);
+        return;
+    }
+
+    foreach (var meterValueNode in meterValues)
+    {
+        if (meterValueNode is not JsonObject meterValueObject)
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues meterValue item must be an object", cancellationToken);
+            return;
+        }
+
+        string? timestamp;
+
+        try
+        {
+            timestamp = meterValueObject["timestamp"]?.GetValue<string>();
+        }
+        catch
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues timestamp is invalid", cancellationToken);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(timestamp))
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues timestamp is required", cancellationToken);
+            return;
+        }
+
+        if (!DateTime.TryParse(timestamp, out var measuredAt))
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues timestamp format is invalid", cancellationToken);
+            return;
+        }
+
+        Console.WriteLine($"MeterValue timestamp: {measuredAt}");
+
+        if (meterValueObject["sampledValue"] is not JsonArray sampledValues)
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue must be an array", cancellationToken);
+            return;
+        }
+
+        if (sampledValues.Count == 0)
+        {
+            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue cannot be empty", cancellationToken);
+            return;
+        }
+
+        foreach (var sampledValueNode in sampledValues)
+        {
+            if (sampledValueNode is not JsonObject sampledValueObject)
+            {
+                await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue item must be an object", cancellationToken);
+                return;
+            }
+
+            string? value;
+
+            try
+            {
+                value = sampledValueObject["value"]?.GetValue<string>();
+            }
+            catch
+            {
+                await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue value is invalid", cancellationToken);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue value is required", cancellationToken);
+                return;
+            }
+
+            string? measurand = null;
+            string? unit = null;
+
+            try
+            {
+                if (sampledValueObject["measurand"] is not null)
+                {
+                    measurand = sampledValueObject["measurand"]!.GetValue<string>();
+                }
+
+                if (sampledValueObject["unit"] is not null)
+                {
+                    unit = sampledValueObject["unit"]!.GetValue<string>();
+                }
+            }
+            catch
+            {
+                await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "MeterValues sampledValue field type is invalid", cancellationToken);
+                return;
+            }
+
+            Console.WriteLine(
+                $"MeterValue: " +
+                $"Time={measuredAt}, " +
+                $"Value={value}, " +
+                $"Measurand={measurand ?? "default"}, " +
+                $"Unit={unit ?? "default"}");
+        }
+    }
+
+    await SendCallResultAsync(
+        socket,
+        uniqueId,
+        new JsonObject(),
+        cancellationToken);
+}
+
 enum ConnectorStatus
 {
     Available,
@@ -487,4 +772,29 @@ class ConnectorState
     public ChargePointErrorCode ErrorCode { get; set; }
 
     public DateTime UpdatedAt { get; set; }
+}
+
+class Transaction
+{
+    public int TransactionId { get; set; }
+
+    public string ChargePointId { get; set; } = "";
+
+    public int ConnectorId { get; set; }
+
+    public string IdTag { get; set; } = "";
+
+    public int MeterStart { get; set; }
+
+    public DateTime StartedAt { get; set; }
+}
+
+class TransactionIdGenerator
+{
+    private int _current = 0;
+
+    public int Next()
+    {
+        return Interlocked.Increment(ref _current);
+    }
 }
