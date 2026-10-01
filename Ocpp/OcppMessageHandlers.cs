@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 static class OcppMessageHandlers
@@ -83,10 +84,12 @@ static class OcppMessageHandlers
 
     public static async Task HandleHeartbeatAsync(WebSocket socket, string? uniqueId, CancellationToken cancellationToken)
     {
-        var responsePayload = new JsonObject
+        var response = new HeartbeatConf
         {
-            ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
+            CurrentTime = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
         };
+
+        var responsePayload = JsonSerializer.SerializeToNode(response)!.AsObject();
 
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
@@ -99,35 +102,35 @@ static class OcppMessageHandlers
             return;
         }
 
-        string? vendor;
-        string? model;
+        BootNotificationReq? request;
 
         try
         {
-            vendor = payloadObject["chargePointVendor"]?.GetValue<string>();
-            model = payloadObject["chargePointModel"]?.GetValue<string>();
+            request = payloadObject.Deserialize<BootNotificationReq>();
         }
-        catch
+        catch (JsonException)
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification field type is invalid", cancellationToken);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(vendor) || string.IsNullOrWhiteSpace(model))
+        if (request is null || string.IsNullOrWhiteSpace(request.ChargePointVendor) || string.IsNullOrWhiteSpace(request.ChargePointModel))
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification required field is missing", cancellationToken);
             return;
         }
 
-        Console.WriteLine($"Vendor: {vendor}");
-        Console.WriteLine($"Model: {model}");
+        Console.WriteLine($"Vendor: {request.ChargePointVendor}");
+        Console.WriteLine($"Model: {request.ChargePointModel}");
 
-        var responsePayload = new JsonObject
+        var response = new BootNotificationConf
         {
-            ["status"] = "Accepted",
-            ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
-            ["interval"] = heartbeatInterval
+            Status = RegistrationStatus.Accepted,
+            CurrentTime = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            Interval = heartbeatInterval
         };
+
+        var responsePayload = JsonSerializer.SerializeToNode(response)!.AsObject();
 
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
@@ -141,27 +144,25 @@ static class OcppMessageHandlers
             return;
         }
 
-        int connectorId;
-        string? errorCode;
-        string? status;
+        StatusNotificationReq? request;
 
         try
         {
-            connectorId = payloadObject["connectorId"]!.GetValue<int>();
-            errorCode = payloadObject["errorCode"]?.GetValue<string>();
-            status = payloadObject["status"]?.GetValue<string>();
+            request = payloadObject.Deserialize<StatusNotificationReq>();
         }
-        catch
+        catch (JsonException)
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification field type is invalid", cancellationToken);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(errorCode) || string.IsNullOrWhiteSpace(status))
+        if (request is null || !request.ConnectorId.HasValue || !request.ErrorCode.HasValue || !request.Status.HasValue)
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification required field is missing", cancellationToken);
             return;
         }
+
+        var connectorId = request.ConnectorId.Value;
 
         if (connectorId < 0)
         {
@@ -169,17 +170,8 @@ static class OcppMessageHandlers
             return;
         }
 
-        if (!Enum.TryParse<ConnectorStatus>(status, out var connectorStatus))
-        {
-            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification status is invalid", cancellationToken);
-            return;
-        }
-
-        if (!Enum.TryParse<ChargePointErrorCode>(errorCode, out var chargePointErrorCode))
-        {
-            await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "StatusNotification errorCode is invalid", cancellationToken);
-            return;
-        }
+        var connectorStatus = request.Status.Value;
+        var chargePointErrorCode = request.ErrorCode.Value;
 
         Console.WriteLine($"ChargePointId: {chargePointId}");
         Console.WriteLine($"ConnectorId: {connectorId}");
@@ -201,7 +193,9 @@ static class OcppMessageHandlers
             $"{state.ErrorCode}, " +
             $"{state.UpdatedAt}");
 
-        await SendCallResultAsync(socket, uniqueId, new JsonObject(), cancellationToken);
+        var responsePayload = JsonSerializer.SerializeToNode(new StatusNotificationConf())!.AsObject();
+
+        await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
 
     public static async Task HandleAuthorizeAsync(WebSocket socket, string? uniqueId, JsonNode? payload, CancellationToken cancellationToken)
