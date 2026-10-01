@@ -91,7 +91,7 @@ static class OcppMessageHandlers
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
 
-    public static async Task HandleBootNotificationAsync(WebSocket socket, string? uniqueId, JsonNode? payload, CancellationToken cancellationToken)
+    public static async Task HandleBootNotificationAsync(WebSocket socket, string? uniqueId, JsonNode? payload, int heartbeatInterval, CancellationToken cancellationToken)
     {
         if (payload is not JsonObject payloadObject)
         {
@@ -126,7 +126,7 @@ static class OcppMessageHandlers
         {
             ["status"] = "Accepted",
             ["currentTime"] = DateTime.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"),
-            ["interval"] = 300
+            ["interval"] = heartbeatInterval
         };
 
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);

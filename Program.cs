@@ -12,6 +12,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
         new JsonStringEnumConverter());
 });
 var app = builder.Build();
+var heartbeatInterval = builder.Configuration.GetValue("Ocpp:HeartbeatInterval", 300);
 var connectorStates = new ConcurrentDictionary<string, ConnectorState>();
 var chargePointConnections = new ConcurrentDictionary<string, bool>();
 var transactions = new ConcurrentDictionary<int, Transaction>();
@@ -186,7 +187,7 @@ app.Map("/ocpp/{chargePointId}", async context =>
                         switch (action)
                         {
                             case "BootNotification":
-                                await HandleBootNotificationAsync(socket, uniqueId, payload, context.RequestAborted);
+                                await HandleBootNotificationAsync(socket, uniqueId, payload, heartbeatInterval, context.RequestAborted);
                                 break;
                             case "Heartbeat":
                                 await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);
