@@ -1,4 +1,4 @@
-enum ConnectorStatus
+public enum ConnectorStatus
 {
     Available,
     Preparing,
@@ -11,7 +11,7 @@ enum ConnectorStatus
     Faulted
 }
 
-enum ChargePointErrorCode
+public enum ChargePointErrorCode
 {
     ConnectorLockFailure,
     EVCommunicationError,
@@ -31,7 +31,7 @@ enum ChargePointErrorCode
     WeakSignal
 }
 
-class ConnectorState
+public class ConnectorState
 {
     public ConnectorStatus Status { get; set; }
 
@@ -40,7 +40,7 @@ class ConnectorState
     public DateTime UpdatedAt { get; set; }
 }
 
-class Transaction
+public class Transaction
 {
     public int TransactionId { get; set; }
 
@@ -55,7 +55,7 @@ class Transaction
     public DateTime StartedAt { get; set; }
 }
 
-class TransactionIdGenerator
+public class TransactionIdGenerator
 {
     private int _current = 0;
 
