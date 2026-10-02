@@ -138,6 +138,14 @@ public class ConnectorState
     public DateTime UpdatedAt { get; set; }
 }
 
+public class ChargePoint
+{
+    public string ChargePointId { get; set; } = "";
+    public string Vendor { get; set; } = "";
+    public string Model { get; set; } = "";
+    public DateTime UpdatedAt { get; set; }
+}
+
 public class Transaction
 {
     public int TransactionId { get; set; }

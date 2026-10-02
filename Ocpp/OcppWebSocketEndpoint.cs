@@ -8,6 +8,7 @@ static class OcppWebSocketEndpoint
     public static void MapOcppWebSocket(
         this WebApplication app,
         ConcurrentDictionary<string, ConnectorState> connectorStates,
+        ConcurrentDictionary<string, ChargePoint> chargePoints,
         ConcurrentDictionary<string, bool> chargePointConnections,
         ConcurrentDictionary<int, Transaction> transactions,
         TransactionIdGenerator transactionIdGenerator,
@@ -119,7 +120,7 @@ static class OcppWebSocketEndpoint
                                 switch (action)
                                 {
                                     case "BootNotification":
-                                        await HandleBootNotificationAsync(socket, uniqueId, payload, heartbeatInterval, context.RequestAborted);
+                                        await HandleBootNotificationAsync(socket, chargePointId, uniqueId, payload, heartbeatInterval, chargePoints, context.RequestAborted);
                                         break;
                                     case "Heartbeat":
                                         await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);

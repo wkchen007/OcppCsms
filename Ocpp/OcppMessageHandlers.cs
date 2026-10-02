@@ -94,7 +94,7 @@ static class OcppMessageHandlers
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
 
-    public static async Task HandleBootNotificationAsync(WebSocket socket, string? uniqueId, JsonNode? payload, int heartbeatInterval, CancellationToken cancellationToken)
+    public static async Task HandleBootNotificationAsync(WebSocket socket, string chargePointId, string? uniqueId, JsonNode? payload, int heartbeatInterval, ConcurrentDictionary<string, ChargePoint> chargePoints, CancellationToken cancellationToken)
     {
         if (payload is not JsonObject payloadObject)
         {
@@ -122,6 +122,14 @@ static class OcppMessageHandlers
 
         Console.WriteLine($"Vendor: {request.ChargePointVendor}");
         Console.WriteLine($"Model: {request.ChargePointModel}");
+
+        chargePoints[chargePointId] = new ChargePoint
+        {
+            ChargePointId = chargePointId,
+            Vendor = request.ChargePointVendor,
+            Model = request.ChargePointModel,
+            UpdatedAt = DateTime.UtcNow
+        };
 
         var response = new BootNotificationConf
         {
