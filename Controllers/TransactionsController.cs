@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace OcppCsms.Controllers;
 
-[ApiController]
 [Route("transactions")]
 public class TransactionsController : ControllerBase
 {

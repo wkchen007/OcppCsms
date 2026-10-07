@@ -3,19 +3,21 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace OcppCsms.Controllers;
 
-[ApiController]
 [Route("chargepoints")]
 public class ChargePointsController : ControllerBase
 {
     private readonly ConcurrentDictionary<string, ConnectorState> _connectorStates;
     private readonly ConcurrentDictionary<string, bool> _chargePointConnections;
+    private readonly ConcurrentDictionary<string, ChargePoint> _chargePoints;
 
     public ChargePointsController(
         ConcurrentDictionary<string, ConnectorState> connectorStates,
-        ConcurrentDictionary<string, bool> chargePointConnections)
+        ConcurrentDictionary<string, bool> chargePointConnections,
+        ConcurrentDictionary<string, ChargePoint> chargePoints)
     {
         _connectorStates = connectorStates;
         _chargePointConnections = chargePointConnections;
+        _chargePoints = chargePoints;
     }
 
     [HttpGet("{chargePointId}/connectors")]
@@ -41,15 +43,20 @@ public class ChargePointsController : ControllerBase
     [HttpGet("{chargePointId}")]
     public IActionResult GetChargePoint(string chargePointId)
     {
-        if (_chargePointConnections.TryGetValue(chargePointId, out var connected))
+        if (!_chargePointConnections.TryGetValue(chargePointId, out var connected))
         {
-            return Ok(new
-            {
-                ChargePointId = chargePointId,
-                Connected = connected
-            });
+            return NotFound();
         }
 
-        return NotFound();
+        _chargePoints.TryGetValue(chargePointId, out var chargePoint);
+
+        return Ok(new
+        {
+            ChargePointId = chargePointId,
+            Connected = connected,
+            Vendor = chargePoint?.Vendor,
+            Model = chargePoint?.Model,
+            UpdatedAt = chargePoint?.UpdatedAt
+        });
     }
 }
