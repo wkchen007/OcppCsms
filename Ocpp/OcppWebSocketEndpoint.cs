@@ -48,6 +48,7 @@ static class OcppWebSocketEndpoint
 
             try
             {
+                bool bootAccepted = false;
                 while (socket.State == WebSocketState.Open)
                 {
                     var message = await ReceiveMessageAsync(socket, context.RequestAborted);
@@ -117,10 +118,17 @@ static class OcppWebSocketEndpoint
                                 Console.WriteLine($"Action: {action}");
                                 Console.WriteLine($"Payload: {payload}");
 
+                                // BootNotification 尚未成功前，拒絕其他 Action
+                                if (!bootAccepted && action != "BootNotification")
+                                {
+                                    await SendCallErrorAsync(socket, uniqueId, "SecurityError", "BootNotification has not been accepted", context.RequestAborted);
+                                    break;
+                                }
+
                                 switch (action)
                                 {
                                     case "BootNotification":
-                                        await HandleBootNotificationAsync(socket, chargePointId, uniqueId, payload, heartbeatInterval, chargePoints, context.RequestAborted);
+                                        bootAccepted = await HandleBootNotificationAsync(socket, chargePointId, uniqueId, payload, heartbeatInterval, chargePoints, context.RequestAborted);
                                         break;
                                     case "Heartbeat":
                                         await HandleHeartbeatAsync(socket, uniqueId, context.RequestAborted);

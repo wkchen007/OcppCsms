@@ -94,12 +94,12 @@ static class OcppMessageHandlers
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
     }
 
-    public static async Task HandleBootNotificationAsync(WebSocket socket, string chargePointId, string? uniqueId, JsonNode? payload, int heartbeatInterval, ConcurrentDictionary<string, ChargePoint> chargePoints, CancellationToken cancellationToken)
+    public static async Task<bool> HandleBootNotificationAsync(WebSocket socket, string chargePointId, string? uniqueId, JsonNode? payload, int heartbeatInterval, ConcurrentDictionary<string, ChargePoint> chargePoints, CancellationToken cancellationToken)
     {
         if (payload is not JsonObject payloadObject)
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification payload must be an object", cancellationToken);
-            return;
+            return false;
         }
 
         BootNotificationReq? request;
@@ -111,13 +111,13 @@ static class OcppMessageHandlers
         catch (JsonException)
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification field type is invalid", cancellationToken);
-            return;
+            return false;
         }
 
         if (request is null || string.IsNullOrWhiteSpace(request.ChargePointVendor) || string.IsNullOrWhiteSpace(request.ChargePointModel))
         {
             await SendCallErrorAsync(socket, uniqueId, "FormationViolation", "BootNotification required field is missing", cancellationToken);
-            return;
+            return false;
         }
 
         Console.WriteLine($"Vendor: {request.ChargePointVendor}");
@@ -141,6 +141,7 @@ static class OcppMessageHandlers
         var responsePayload = JsonSerializer.SerializeToNode(response)!.AsObject();
 
         await SendCallResultAsync(socket, uniqueId, responsePayload, cancellationToken);
+        return true;
     }
 
     public static async Task HandleStatusNotificationAsync(WebSocket socket, string? chargePointId, string? uniqueId, JsonNode? payload,
