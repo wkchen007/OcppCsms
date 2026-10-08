@@ -48,7 +48,7 @@ static class OcppWebSocketEndpoint
 
             try
             {
-                bool bootAccepted = false;
+                bool bootAccepted = chargePoints.ContainsKey(chargePointId);
                 while (socket.State == WebSocketState.Open)
                 {
                     var message = await ReceiveMessageAsync(socket, context.RequestAborted);
@@ -118,7 +118,7 @@ static class OcppWebSocketEndpoint
                                 Console.WriteLine($"Action: {action}");
                                 Console.WriteLine($"Payload: {payload}");
 
-                                // BootNotification 尚未成功前，拒絕其他 Action
+                                // BootNotification 尚未註冊前，拒絕其他 Action
                                 if (!bootAccepted && action != "BootNotification")
                                 {
                                     await SendCallErrorAsync(socket, uniqueId, "SecurityError", "BootNotification has not been accepted", context.RequestAborted);
